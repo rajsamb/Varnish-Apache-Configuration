@@ -23,6 +23,11 @@ sub vcl_recv {
     #
     # Typically you clean up the request here, removing cookies you don't need,
     # rewriting the request, etc.
+
+    #Cookies are preventing cache hits. Stripping cookies (Cache-Control: no-cache)
+    if (!(req.url ~ "^/admin/")) {
+        unset req.http.cookie;
+    }
 }
 
 sub vcl_backend_response {
@@ -30,6 +35,10 @@ sub vcl_backend_response {
     #
     # Here you clean the response headers, removing silly Set-Cookie headers
     # and other mistakes your backend does.
+
+    # choose to only do this for certain urls (wrap it in ( if req.url ~ "" ) logic)
+    unset beresp.http.Cache-Control;
+    #set beresp.http.Cache-Control = "public"; # do we need this
 }
 
 sub vcl_deliver {

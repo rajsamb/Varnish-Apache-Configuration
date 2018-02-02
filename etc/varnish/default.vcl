@@ -46,4 +46,16 @@ sub vcl_deliver {
     # response to the client.
     #
     # You can do accounting or modifying the final object here.
+
+    if (obj.hits > 0) {
+        set resp.http.X-Cache = "HIT";
+    } else {
+        set resp.http.X-Cache = "MISS";
+    }
+
+    # Note that obj.hits behaviour changed in 4.0, now it counts per objecthead, not per object, and obj.hits may not
+    # be reset in some cases where bans are in use.
+
+    # So take hits with a grain of salt
+    set resp.http.X-Cache-Hits = obj.hits;
 }

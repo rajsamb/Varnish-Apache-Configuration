@@ -36,9 +36,18 @@ sub vcl_backend_response {
     # Here you clean the response headers, removing silly Set-Cookie headers
     # and other mistakes your backend does.
 
-    # choose to only do this for certain urls (wrap it in ( if req.url ~ "" ) logic)
-    unset beresp.http.Cache-Control;
-    #set beresp.http.Cache-Control = "public"; # do we need this
+    if (beresp.ttl < 12h) {
+          unset beresp.http.cookie;
+          unset beresp.http.Set-Cookie;
+
+          # Setting TTL variable object to 12h. Can be in seconds (120s), minutes(2m) or hours(2h).
+          ## Will save the cache version for 12h
+          set beresp.ttl = 12h;
+
+          # choose to only do this for certain urls (wrap it in ( if req.url ~ "" ) logic)
+          unset beresp.http.Cache-Control;
+          #set beresp.http.Cache-Control = "public"; # do we need this
+    }
 }
 
 sub vcl_deliver {

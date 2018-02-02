@@ -23,6 +23,10 @@ sub vcl_recv {
     #
     # Typically you clean up the request here, removing cookies you don't need,
     # rewriting the request, etc.
+
+    #Cookies are preventing cache hits. Stripping cookies (Cache-Control: no-cache)
+    unset req.http.cookie;
+
 }
 
 sub vcl_backend_response {

@@ -119,16 +119,6 @@ sub vcl_recv {
         return (hash);
     }
 
-    # Sometimes, a 301 or 302 redirect formed via Apache's mod_rewrite can mess with the HTTP port that is being passed along.
-    # This often happens with simple rewrite rules in a scenario where Varnish runs on :80 and Apache on :8080 on the same box.
-    # A redirect can then often redirect the end-user to a URL on :8080, where it should be :80.
-    # This may need finetuning on your setup.
-    #
-    # To prevent accidental replace, we only filter the 301/302 redirects for now.
-    if (beresp.status == 301 || beresp.status == 302) {
-        set beresp.http.Location = regsub(beresp.http.Location, ":[0-9]+", "");
-    }
-
     # Don't cache 50x responses
     if (beresp.status == 500 || beresp.status == 502 || beresp.status == 503 || beresp.status == 504) {
         return (abandon);
@@ -172,6 +162,16 @@ sub vcl_backend_response {
     if (bereq.url ~ "^[^?]*\.(7z|avi|bz2|flac|flv|gz|mka|mkv|mov|mp3|mp4|mpeg|mpg|ogg|ogm|opus|rar|tar|tgz|tbz|txz|wav|webm|xz|zip)(\?.*)?$") {
         unset beresp.http.set-cookie;
         set beresp.do_stream = true;  # Check memory usage it'll grow in fetch_chunksize blocks (128k by default) if the backend doesn't send a Content-Length header, so only enable it for big objects
+    }
+
+    # Sometimes, a 301 or 302 redirect formed via Apache's mod_rewrite can mess with the HTTP port that is being passed along.
+    # This often happens with simple rewrite rules in a scenario where Varnish runs on :80 and Apache on :8080 on the same box.
+    # A redirect can then often redirect the end-user to a URL on :8080, where it should be :80.
+    # This may need finetuning on your setup.
+    #
+    # To prevent accidental replace, we only filter the 301/302 redirects for now.
+    if (beresp.status == 301 || beresp.status == 302) {
+        set beresp.http.Location = regsub(beresp.http.Location, ":[0-9]+", "");
     }
 }
 

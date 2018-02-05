@@ -118,11 +118,6 @@ sub vcl_recv {
         unset req.http.Cookie;
         return (hash);
     }
-
-    # Don't cache 50x responses
-    if (beresp.status == 500 || beresp.status == 502 || beresp.status == 503 || beresp.status == 504) {
-        return (abandon);
-    }
 }
 
 sub vcl_backend_response {
@@ -172,6 +167,11 @@ sub vcl_backend_response {
     # To prevent accidental replace, we only filter the 301/302 redirects for now.
     if (beresp.status == 301 || beresp.status == 302) {
         set beresp.http.Location = regsub(beresp.http.Location, ":[0-9]+", "");
+    }
+
+    # Don't cache 50x responses
+    if (beresp.status == 500 || beresp.status == 502 || beresp.status == 503 || beresp.status == 504) {
+        return (abandon);
     }
 }
 

@@ -118,6 +118,11 @@ sub vcl_recv {
         unset req.http.Cookie;
         return (hash);
     }
+
+    # Strip a trailing ? if it exists
+    if (req.url ~ "\?$") {
+        set req.url = regsub(req.url, "\?$", "");
+    }
 }
 
 sub vcl_backend_response {

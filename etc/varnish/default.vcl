@@ -51,6 +51,23 @@ sub vcl_recv {
     if (!(req.url ~ "^/admin/")) {
         unset req.http.cookie;
     }
+
+    # Some generic URL manipulation, useful for all templates that follow
+    # First remove the Google Analytics added parameters, useless for our backend
+    if (req.url ~ "(\?|&)(utm_source|utm_medium|utm_campaign|utm_content|gclid|cx|ie|cof|siteurl)=") {
+        set req.url = regsuball(req.url, "&(utm_source|utm_medium|utm_campaign|utm_content|gclid|cx|ie|cof|siteurl)=([A-z0-9_\-\.%25]+)", "");
+        set req.url = regsuball(req.url, "\?(utm_source|utm_medium|utm_campaign|utm_content|gclid|cx|ie|cof|siteurl)=([A-z0-9_\-\.%25]+)", "?");
+    set req.url = regsub(req.url, "\?&", "?");
+        set req.url = regsub(req.url, "\?$", "");
+    }
+
+    # Remove any Google Analytics based cookies
+    set req.http.Cookie = regsuball(req.http.Cookie, "__utm.=[^;]+(; )?", "");
+    set req.http.Cookie = regsuball(req.http.Cookie, "_ga=[^;]+(; )?", "");
+    set req.http.Cookie = regsuball(req.http.Cookie, "_gat=[^;]+(; )?", "");
+    set req.http.Cookie = regsuball(req.http.Cookie, "utmctr=[^;]+(; )?", "");
+    set req.http.Cookie = regsuball(req.http.Cookie, "utmcmd.=[^;]+(; )?", "");
+    set req.http.Cookie = regsuball(req.http.Cookie, "utmccn.=[^;]+(; )?", "");
 }
 
 sub vcl_backend_response {

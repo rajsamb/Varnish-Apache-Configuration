@@ -16,25 +16,315 @@ vcl 4.0;
 backend default {
     .host = "127.0.0.1";
     .port = "8080";
+
+    #Use varnish cache for High Availability with backend polling
+    #Contine service cache content if the backend is unreachable.   
+    .probe = {
+        #.url = "/"; # short easy way (GET /)
+        # We prefer to only do a HEAD /
+        .request =
+            "HEAD / HTTP/1.1"
+            "Host: localhost"
+            "Connection: close"
+            "User-Agent: Varnish Health Probe";
+
+        .interval  = 5s; # check the health of each backend every 5 seconds
+        .timeout   = 1s; # timing out after 1 second.
+        .window    = 5;  # If 3 out of the last 5 polls succeeded the backend is considered healthy, otherwise it will be marked as sick
+        .threshold = 3;
+    }
+
+    .first_byte_timeout     = 300s;   # How long to wait before we receive a first byte from our backend?
+    .connect_timeout        = 5s;     # How long to wait for a backend connection?
+    .between_bytes_timeout  = 2s;     # How long to wait between bytes received from our backend?
 }
 
 sub vcl_recv {
+    call  devicedetect;    
+
     # Happens before we check if we have this in cache already.
     #
     # Typically you clean up the request here, removing cookies you don't need,
     # rewriting the request, etc.
+
+    #Cookies are preventing cache hits. Stripping cookies
+    unset req.http.cookie; #We have set this on vcl_fetch
+   
+
+    ## https://github.com/mattiasgeniar/varnish-4.0-configuration-templates/blob/master/default.vcl
+ 
+    # Some generic URL manipulation, useful for all templates that follow
+    # First remove the Google Analytics added parameters, useless for our backend
+    if (req.url ~ "(\?|&)(utm_source|utm_medium|utm_campaign|utm_content|gclid|cx|ie|cof|siteurl)=") {
+        set req.url = regsuball(req.url, "&(utm_source|utm_medium|utm_campaign|utm_content|gclid|cx|ie|cof|siteurl)=([A-z0-9_\-\.%25]+)", "");
+        set req.url = regsuball(req.url, "\?(utm_source|utm_medium|utm_campaign|utm_content|gclid|cx|ie|cof|siteurl)=([A-z0-9_\-\.%25]+)", "?");
+        set req.url = regsub(req.url, "\?&", "?");
+        set req.url = regsub(req.url, "\?$", "");
+    }
+
+    # Strip a trailing ? if it exists
+    if (req.url ~ "\?$") {
+        set req.url = regsub(req.url, "\?$", "");
+    }
+
+    # Some generic cookie manipulation, useful for all templates that follow
+    # Remove the "has_js" cookie
+    set req.http.Cookie = regsuball(req.http.Cookie, "has_js=[^;]+(; )?", "");
+
+    # Remove any Google Analytics based cookies
+    set req.http.Cookie = regsuball(req.http.Cookie, "__utm.=[^;]+(; )?", "");
+    set req.http.Cookie = regsuball(req.http.Cookie, "_ga=[^;]+(; )?", "");
+    set req.http.Cookie = regsuball(req.http.Cookie, "_gat=[^;]+(; )?", "");
+    set req.http.Cookie = regsuball(req.http.Cookie, "utmctr=[^;]+(; )?", "");
+    set req.http.Cookie = regsuball(req.http.Cookie, "utmcmd.=[^;]+(; )?", "");
+    set req.http.Cookie = regsuball(req.http.Cookie, "utmccn.=[^;]+(; )?", "");
+
+    # Remove DoubleClick offensive cookies
+    set req.http.Cookie = regsuball(req.http.Cookie, "__gads=[^;]+(; )?", "");
+
+    # Remove the Quant Capital cookies (added by some plugin, all __qca)
+    set req.http.Cookie = regsuball(req.http.Cookie, "__qc.=[^;]+(; )?", "");
+
+    # Remove the AddThis cookies
+    set req.http.Cookie = regsuball(req.http.Cookie, "__atuv.=[^;]+(; )?", "");
+
+    # Remove a ";" prefix in the cookie if present
+    set req.http.Cookie = regsuball(req.http.Cookie, "^;\s*", "");
+
+    # Are there cookies left with only spaces or that are empty?
+    if (req.http.cookie ~ "^\s*$") {
+        unset req.http.cookie;
+    }
+
+    if (req.http.Cache-Control ~ "(?i)no-cache") {
+        #if (req.http.Cache-Control ~ "(?i)no-cache" && client.ip ~ editors) { # create the acl editors if you want to restrict the Ctrl-F5
+        # http://varnish.projects.linpro.no/wiki/VCLExampleEnableForceRefresh
+        # Ignore requests via proxy caches and badly behaved crawlers
+        # like msnbot that send no-cache with every request.
+        if (! (req.http.Via || req.http.User-Agent ~ "(?i)bot" || req.http.X-Purge)) {
+            #set req.hash_always_miss = true; # Doesn't seems to refresh the object in the cache
+            return (purge); # Couple this with restart in vcl_purge and X-Purge header to avoid loops
+        }
+    }
+
+    # Large static files are delivered directly to the end-user without
+    # waiting for Varnish to fully read the file first.
+    # Varnish 4 fully supports Streaming, so set do_stream in vcl_backend_response()
+    if (req.url ~ "^[^?]*\.(7z|avi|bz2|flac|flv|gz|mka|mkv|mov|mp3|mp4|mpeg|mpg|ogg|ogm|opus|rar|tar|tgz|tbz|txz|wav|webm|xz|zip)(\?.*)?$") {
+        unset req.http.Cookie;
+        return (hash);
+    }
+
+    # Remove all cookies for static files
+    # A valid discussion could be held on this line: do you really need to
+    # cache static files that don't cause load? Only if you have memory left.
+    # Sure, there's disk I/O, but chances are your OS will already have these files in their buffers (thus memory).
+    # Before you blindly enable this, have a read here: https://ma.ttias.be/stop-caching-static-files/
+    if (req.url ~ "^[^?]*\.(7z|avi|bmp|bz2|css|csv|doc|docx|eot|flac|flv|gif|gz|ico|jpeg|jpg|js|less|mka|mkv|mov|mp3|mp4|mpeg|mpg|odt|otf|ogg|ogm|opus|pdf|png|ppt|pptx|rar|rtf|svg|svgz|swf|tar|tbz|tgz|ttf|txt|txz|wav|webm|webp|woff|woff2|xls|xlsx|xml|xz|zip)(\?.*)?$") {
+        unset req.http.Cookie;
+        return (hash);
+    }
 }
 
 sub vcl_backend_response {
-    # Happens after we have read the response headers from the backend.
-    #
+    # Happens after we have read the response headers from the backend.    
     # Here you clean the response headers, removing silly Set-Cookie headers
     # and other mistakes your backend does.
+    if (beresp.ttl < 12h) {
+        unset beresp.http.cookie;
+        unset beresp.http.Set-Cookie;
+
+        # Setting TTL variable object to 12h. Can be in seconds (120s), minutes(2m) or hours(2h). Will save the cache
+        # version for 24h
+        set beresp.ttl = 12h;
+        unset beresp.http.Cache-Control;
+    } 
+
+    # Enable cache for all static files
+    # The same argument as the static caches from above: monitor your cache size,
+    # if you get data nuked out of it, consider giving up the static file cache.
+    # Before you blindly enable this, have a read here: https://ma.ttias.be/stop-caching-static-files/
+    if (bereq.url ~ "^[^?]*\.(7z|avi|bmp|bz2|css|csv|doc|docx|eot|flac|flv|gif|gz|ico|jpeg|jpg|js|less|mka|mkv|mov|mp3|mp4|mpeg|mpg|odt|otf|ogg|ogm|opus|pdf|png|ppt|pptx|rar|rtf|svg|svgz|swf|tar|tbz|tgz|ttf|txt|txz|wav|webm|webp|woff|woff2|xls|xlsx|xml|xz|zip)(\?.*)?$") {
+        unset beresp.http.set-cookie;
+    }
+ 
+    # Large static files are delivered directly to the end-user without
+    # waiting for Varnish to fully read the file first.
+    # Varnish 4 fully supports Streaming, so use streaming here to avoid locking.
+    if (bereq.url ~ "^[^?]*\.(7z|avi|bz2|flac|flv|gz|mka|mkv|mov|mp3|mp4|mpeg|mpg|ogg|ogm|opus|rar|tar|tgz|tbz|txz|wav|webm|xz|zip)(\?.*)?$") {
+        unset beresp.http.set-cookie;
+
+        # Check memory usage it'll grow in fetch_chunksize blocks (128k by default) 
+        # if the backend doesn't send a Content-Length header, so only enable it for big objects
+        set beresp.do_stream = true;
+    } 
+
+    # Sometimes, a 301 or 302 redirect formed via Apache's mod_rewrite can mess with the HTTP port that is being passed along.
+    # This often happens with simple rewrite rules in a scenario where Varnish runs on :80 and Apache on :8080 on the same box.
+    # A redirect can then often redirect the end-user to a URL on :8080, where it should be :80.
+    # This may need finetuning on your setup.
+    #
+    # To prevent accidental replace, we only filter the 301/302 redirects for now.
+    if (beresp.status == 301 || beresp.status == 302) {
+        set beresp.http.Location = regsub(beresp.http.Location, ":[0-9]+", "");
+    }
+
+    # Don't cache 50x responses
+    if (beresp.status == 500 || beresp.status == 502 || beresp.status == 503 || beresp.status == 504) {
+        return (abandon);
+    } 
+   
+
+    # 24h allows the backend to be down for 24 hour without any impact to website users.
+    # # Allow stale content, in case the backend goes down.
+    # make Varnish keep all objects for 6 hours beyond their TTL
+    set beresp.grace = 24h;
 }
 
+
+# to keep any caches in the wild from serving wrong content to client #2
+# behind them, we need to transform the Vary on the way out.
 sub vcl_deliver {
     # Happens when we have all the pieces we need, and are about to send the
     # response to the client.
     #
     # You can do accounting or modifying the final object here.
+
+    if (obj.hits > 0) { # Add debug header to see if it's a HIT/MISS and the number of hits, disable when not needed      
+        set resp.http.X-Cache = "HIT";    
+    } else {    
+        set resp.http.X-Cache = "MISS";     
+    }
+
+    # Please note that obj.hits behaviour changed in 4.0, now it counts per objecthead, not per object
+    # and obj.hits may not be reset in some cases where bans are in use. See bug 1492 for details.
+    # So take hits with a grain of salt
+    set resp.http.X-Cache-Hits = obj.hits;
+
+    if ((req.http.X-UA-Device) && (resp.http.Vary)) {
+        set resp.http.Vary = regsub(resp.http.Vary, "X-UA-Device", "User-Agent");
+    }
+}
+
+
+sub vcl_purge {
+    # Only handle actual PURGE HTTP methods, everything else is discarded
+    if (req.method != "PURGE") {
+        # restart request
+        set req.http.X-Purge = "Yes";
+        return (restart);
+    }
+}
+
+sub vcl_synth {
+  if (resp.status == 720) {
+    # We use this special error status 720 to force redirects with 301 (permanent) redirects
+    # To use this, call the following from anywhere in vcl_recv: return (synth(720, "http://host/new.html"));
+    set resp.http.Location = resp.reason;
+    set resp.status = 301;
+    return (deliver);
+  } elseif (resp.status == 721) {
+    # And we use error status 721 to force redirects with a 302 (temporary) redirect
+    # To use this, call the following from anywhere in vcl_recv: return (synth(720, "http://host/new.html"));
+    set resp.http.Location = resp.reason;
+    set resp.status = 302;
+    return (deliver);
+  }
+
+  return (deliver);
+}
+
+
+sub vcl_fini {
+  # Called when VCL is discarded only after all requests have exited the VCL.
+  # Typically used to clean up VMODs.
+
+  return (ok);
+}
+
+sub vcl_hash {
+    if (req.http.X-UA-Device) {
+    hash_data(req.http.X-UA-Device);
+    }
+}
+
+sub devicedetect {
+    unset req.http.X-UA-Device;
+    set req.http.X-UA-Device = "pc";
+
+    # Handle that a cookie may override the detection alltogether.
+    if (req.http.Cookie ~ "(?i)X-UA-Device-force") {
+        /* ;?? means zero or one ;, non-greedy to match the first. */
+        set req.http.X-UA-Device = regsub(req.http.Cookie, "(?i).*X-UA-Device-force=([^;]+);??.*", "\1");
+        /* Clean up our mess in the cookie header */
+        set req.http.Cookie = regsuball(req.http.Cookie, "(^|; ) *X-UA-Device-force=[^;]+;? *", "\1");
+        /* If the cookie header is now empty, or just whitespace, unset it. */
+        if (req.http.Cookie ~ "^ *$") { unset req.http.Cookie; }
+    } else {
+        if (req.http.User-Agent ~ "\(compatible; Googlebot-Mobile/2.1; \+http://www.google.com/bot.html\)" ||
+            (req.http.User-Agent ~ "(Android|iPhone)" && req.http.User-Agent ~ "\(compatible.?; Googlebot/2.1.?; \+http://www.google.com/bot.html") ||
+            (req.http.User-Agent ~ "(iPhone|Windows Phone)" && req.http.User-Agent ~ "\(compatible; bingbot/2.0; \+http://www.bing.com/bingbot.htm")) {
+            set req.http.X-UA-Device = "mobile-bot"; }
+        elsif (req.http.User-Agent ~ "(?i)(ads|google|bing|msn|yandex|baidu|ro|career|seznam|)bot" ||
+            req.http.User-Agent ~ "(?i)(baidu|jike|symantec)spider" ||
+            req.http.User-Agent ~ "(?i)scanner" ||
+            req.http.User-Agent ~ "(?i)(web)crawler") {
+            set req.http.X-UA-Device = "bot"; }
+        elsif (req.http.User-Agent ~ "(?i)ipad")        { set req.http.X-UA-Device = "tablet-ipad"; }
+        elsif (req.http.User-Agent ~ "(?i)ip(hone|od)") { set req.http.X-UA-Device = "mobile-iphone"; }
+        /* how do we differ between an android phone and an android tablet?
+           http://stackoverflow.com/questions/5341637/how-do-detect-android-tablets-in-general-useragent */
+        elsif (req.http.User-Agent ~ "(?i)android.*(mobile|mini)") { set req.http.X-UA-Device = "mobile-android"; }
+        // android 3/honeycomb was just about tablet-only, and any phones will probably handle a bigger page layout.
+        elsif (req.http.User-Agent ~ "(?i)android 3")              { set req.http.X-UA-Device = "tablet-android"; }
+        /* Opera Mobile */
+        elsif (req.http.User-Agent ~ "Opera Mobi")                  { set req.http.X-UA-Device = "mobile-smartphone"; }
+        // May very well give false positives towards android tablets. Suggestions welcome.
+        elsif (req.http.User-Agent ~ "(?i)android")         { set req.http.X-UA-Device = "tablet-android"; }
+        elsif (req.http.User-Agent ~ "PlayBook; U; RIM Tablet")         { set req.http.X-UA-Device = "tablet-rim"; }
+        elsif (req.http.User-Agent ~ "hp-tablet.*TouchPad")         { set req.http.X-UA-Device = "tablet-hp"; }
+        elsif (req.http.User-Agent ~ "Kindle/3")         { set req.http.X-UA-Device = "tablet-kindle"; }
+        elsif (req.http.User-Agent ~ "Touch.+Tablet PC" ||
+            req.http.User-Agent ~ "Windows NT [0-9.]+; ARM;" ) {
+                set req.http.X-UA-Device = "tablet-microsoft";
+        }
+        elsif (req.http.User-Agent ~ "Mobile.+Firefox")     { set req.http.X-UA-Device = "mobile-firefoxos"; }
+        elsif (req.http.User-Agent ~ "^HTC" ||
+            req.http.User-Agent ~ "Fennec" ||
+            req.http.User-Agent ~ "IEMobile" ||
+            req.http.User-Agent ~ "BlackBerry" ||
+            req.http.User-Agent ~ "BB10.*Mobile" ||
+            req.http.User-Agent ~ "GT-.*Build/GINGERBREAD" ||
+            req.http.User-Agent ~ "SymbianOS.*AppleWebKit") {
+            set req.http.X-UA-Device = "mobile-smartphone";
+        }
+        elsif (req.http.User-Agent ~ "(?i)symbian" ||
+            req.http.User-Agent ~ "(?i)^sonyericsson" ||
+            req.http.User-Agent ~ "(?i)^nokia" ||
+            req.http.User-Agent ~ "(?i)^samsung" ||
+            req.http.User-Agent ~ "(?i)^lg" ||
+            req.http.User-Agent ~ "(?i)bada" ||
+            req.http.User-Agent ~ "(?i)blazer" ||
+            req.http.User-Agent ~ "(?i)cellphone" ||
+            req.http.User-Agent ~ "(?i)iemobile" ||
+            req.http.User-Agent ~ "(?i)midp-2.0" ||
+            req.http.User-Agent ~ "(?i)u990" ||
+            req.http.User-Agent ~ "(?i)netfront" ||
+            req.http.User-Agent ~ "(?i)opera mini" ||
+            req.http.User-Agent ~ "(?i)palm" ||
+            req.http.User-Agent ~ "(?i)nintendo wii" ||
+            req.http.User-Agent ~ "(?i)playstation portable" ||
+            req.http.User-Agent ~ "(?i)portalmmm" ||
+            req.http.User-Agent ~ "(?i)proxinet" ||
+            req.http.User-Agent ~ "(?i)sonyericsson" ||
+            req.http.User-Agent ~ "(?i)symbian" ||
+            req.http.User-Agent ~ "(?i)windows\ ?ce" ||
+            req.http.User-Agent ~ "(?i)winwap" ||
+            req.http.User-Agent ~ "(?i)eudoraweb" ||
+            req.http.User-Agent ~ "(?i)htc" ||
+            req.http.User-Agent ~ "(?i)240x320" ||
+            req.http.User-Agent ~ "(?i)avantgo") {
+            set req.http.X-UA-Device = "mobile-generic";
+        }
+    }
 }

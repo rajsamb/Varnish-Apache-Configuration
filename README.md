@@ -97,3 +97,28 @@
     sed -i -e ‘s/80/8080/g’ sites-available/*
     ```
 
+
+9. Excluding part of page from caching with ESI (Edge side Includes)
+
+    (A) First, enable esi on varnish
+    ```
+    sub vcl_backend_response { 
+      set beresp.do_esi = true;  
+    }
+    ```
+
+
+    (B) Second, put the part of a page that need to be excluded from caching between <esi> tags
+    ```
+    <esi:include src="inc/sidebar.php"/>
+    <esi:remove>
+      <?php include('inc/sidebar.php'); ?>
+      <!-- No ESI! --> 
+    </esi:remove>
+    ```
+
+    Now, with this on place if esi is enabled on varnish it will use esi:include & if esi is not enabled it will use php include and display "No ESI!" on source code. 
+
+
+    Source: https://www.smashingmagazine.com/2015/02/using-edge-side-includes-in-varnish/
+

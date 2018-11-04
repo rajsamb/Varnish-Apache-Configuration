@@ -127,6 +127,19 @@ sub vcl_recv {
 }
 
 sub vcl_backend_response {
+    # Tell varnish to include ESI (Edge Side Includes) - for excluding part of page from caching.
+    # Source: https://www.smashingmagazine.com/2015/02/using-edge-side-includes-in-varnish/
+    set beresp.do_esi = true;
+
+    # After enabling esi on varnish, on php need to implement following code
+    # <esi:include src="inc/sidebar.php"/>
+    # <esi:remove>
+    #   <?php include('inc/sidebar.php'); ?>
+    #   <!-- No ESI! --> 
+    # </esi:remove>
+    #
+    # Using above if Varnish ns no ESI running it will use php include to include sidebar and display No ESI text on souce code
+
     # Happens after we have read the response headers from the backend.    
     # Here you clean the response headers, removing silly Set-Cookie headers
     # and other mistakes your backend does.
